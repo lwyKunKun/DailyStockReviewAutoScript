@@ -1,0 +1,15 @@
+# 敏感配置
+.env
+
+# macOS
+.DS_Store
+__pycache__/
+*.pyc
+
+# 运行时数据
+cache/
+logs/
+
+# IDE
+.vscode/
+.idea/

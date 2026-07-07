@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+股票每日复盘自动化系统 · 主入口
+用法:
+  python3 main.py                                # 自动判断模式 (读取缓存数据)
+  python3 main.py --mode fetch                   # 仅采集数据，保存到缓存
+  python3 main.py --mode daily                   # 强制每日复盘 (读缓存)
+  python3 main.py --mode daily --force-refresh   # 每日复盘 (强制重新采集)
+  python3 main.py --mode weekly                  # 强制周末汇总
+  python3 main.py --mode holiday                 # 强制节假日汇总
+  python3 main.py --mode daily --dry-run         # 干跑（不写文件，打印输出）
+
+定时流程:
+  15:00 → python3 main.py --mode fetch           # 收盘后拉数据，存缓存
+  19:00 → python3 main.py --mode auto            # 读缓存，AI分析，写Obsidian
+"""
+
+import sys
+import os
+import json
+import traceback
+from datetime import datetime
+
+# 将项目根目录加入 path
+sys.path.insert(0, os.path.dirname(__file__))
+
+from data_fetcher import collect_all
+from prompt_builder import build_daily_prompts, build_weekly_prompt, build_holiday_prompt
+from ai_analyzer import analyze_batch, analyze
+from output_writer import write_daily_reviews, write_weekly_summary, write_holiday_summary, write_log
+from stock_tracker import update_tracking, get_tracking_stats
+from holiday_checker import should_run_today, get_holiday_info
+
+# 缓存文件路径
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
+CACHE_FILE = os.path.join(CACHE_DIR, "latest_data.json")
+
+
+def run_fetch_mode():
+    """仅采集数据并保存到缓存"""
+    print("=" * 60)
+    print(f"📡 数据采集模式 - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    write_log("启动数据采集", "INFO")
+    data = collect_all()
+
+    # 保存缓存
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+    print(f"📁 缓存已保存: {CACHE_FILE}")
+    print(f"   📈 涨停: {data['涨跌停']['涨停家数']}家  "
+          f"跌停: {data['涨跌停']['跌停家数']}家  "
+          f"成交额: {data['市场宽度']['总成交额']}亿")
+    write_log(f"数据采集完成 - 涨停{data['涨跌停']['涨停家数']}家 成交额{data['市场宽度']['总成交额']}亿", "INFO")
+    print("✅ 数据采集完成!")
+    return data
+
+
+def load_cached_data() -> dict:
+    """读取缓存数据"""
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cache_time = data.get("采集时间", "未知")
+        print(f"📂 使用缓存数据 (采集于 {cache_time})")
+        return data
+    else:
+        print("⚠️  缓存不存在，重新采集数据...")
+        return collect_all()
+
+
+def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
+    """执行每日复盘 4合1"""
+    print("=" * 60)
+    print(f"📊 每日复盘模式 - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    write_log("启动每日复盘模式", "INFO")
+
+    # 1. 加载数据（优先读缓存）
+    if force_refresh:
+        write_log("强制刷新，重新采集数据", "INFO")
+        data = collect_all()
+    else:
+        data = load_cached_data()
+
+    write_log(f"数据就绪 - 成交额: {data['市场宽度']['总成交额']}亿", "INFO")
+
+    # 2. 构建 prompts
+    prompts = build_daily_prompts(data)
+    write_log(f"构建 {len(prompts)} 个分析任务", "INFO")
+
+    # 3. AI 分析
+    write_log("开始 AI 分析", "INFO")
+    results = analyze_batch(prompts)
+    write_log("AI 分析完成", "INFO")
+
+    # 4. 写入文件
+    if not dry_run:
+        written = write_daily_reviews(results)
+        write_log(f"写入 {len(written)} 个文件", "INFO")
+    else:
+        print("\n--- 🧪 干跑模式，跳过文件写入 ---")
+        for r in results:
+            print(f"\n{'='*40}")
+            print(f"📝 {r['name']}")
+            print(f"{'='*40}")
+            print(r["content"][:500] + "..." if len(r["content"]) > 500 else r["content"])
+
+    # 5. 更新股票跟踪
+    if not dry_run and results:
+        all_texts = [r["content"] for r in results]
+        db = update_tracking(all_texts, source="每日复盘")
+        stats = get_tracking_stats()
+        write_log(f"股票跟踪更新 - 总计: {stats['总计']} 跟踪中: {stats['跟踪中']} 已退潮: {stats['已退潮']}", "INFO")
+        print(f"📈 股票跟踪库: {stats}")
+
+    # 6. 完成
+    write_log("每日复盘模式执行完毕", "INFO")
+    print("\n✅ 每日复盘完成!")
+
+    return results
+
+
+def run_weekly_mode(dry_run: bool = False):
+    """执行周日消息汇总"""
+    print("=" * 60)
+    print(f"📰 周末消息汇总模式 - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    write_log("启动周末消息汇总模式", "INFO")
+
+    # 使用缓存数据（如果有的话，周日的缓存是周五采集的）
+    data = load_cached_data()
+
+    # 构建 prompt
+    task = build_weekly_prompt(data)
+    write_log("构建周末汇总任务", "INFO")
+
+    # AI 分析
+    result = analyze(task["prompt"], task["name"])
+    result_dict = {
+        "name": task["name"],
+        "output_suffix": task["output_suffix"],
+        "content": result,
+    }
+
+    # 写入
+    if not dry_run:
+        filepath = write_weekly_summary(result_dict)
+        write_log(f"写入: {filepath}", "INFO")
+    else:
+        print("\n--- 🧪 干跑模式 ---")
+        print(result[:500] + "..." if len(result) > 500 else result)
+
+    write_log("周末消息汇总完成", "INFO")
+    print("\n✅ 周末消息汇总完成!")
+
+    return [result_dict]
+
+
+def run_holiday_mode(dry_run: bool = False):
+    """执行节假日消息汇总"""
+    info = get_holiday_info()
+    if not info:
+        print("❌ 今天不是节假日最后一天")
+        return []
+
+    print("=" * 60)
+    print(f"🏖️  节假日消息汇总模式 - {info['holiday_name']} ({info['start_date']} ~ {info['end_date']})")
+    print("=" * 60)
+
+    write_log(f"启动节假日消息汇总 - {info['holiday_name']}", "INFO")
+
+    # 使用缓存数据
+    data = load_cached_data()
+
+    # 构建 prompt
+    task = build_holiday_prompt(
+        data,
+        info["holiday_name"],
+        info["start_date"],
+        info["end_date"],
+        info["next_trading_day"],
+    )
+    write_log(f"构建节假日汇总: {info['holiday_name']}", "INFO")
+
+    # AI 分析
+    result = analyze(task["prompt"], task["name"])
+    result_dict = {
+        "name": task["name"],
+        "output_suffix": task["output_suffix"],
+        "content": result,
+    }
+
+    # 写入
+    if not dry_run:
+        filepath = write_holiday_summary(result_dict)
+        write_log(f"写入: {filepath}", "INFO")
+    else:
+        print("\n--- 🧪 干跑模式 ---")
+        print(result[:500] + "..." if len(result) > 500 else result)
+
+    write_log("节假日消息汇总完成", "INFO")
+    print("\n✅ 节假日消息汇总完成!")
+
+    return [result_dict]
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="股票每日复盘自动化系统")
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "weekly", "holiday", "auto", "fetch"],
+        default="auto",
+        help="运行模式: fetch=仅采集数据, auto=自动判断, daily/weekly/holiday=指定模式",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="干跑模式，不写入文件")
+    parser.add_argument("--force-refresh", action="store_true", help="强制重新采集数据（不使用缓存）")
+    args = parser.parse_args()
+
+    # fetch 模式：仅采集数据
+    if args.mode == "fetch":
+        run_fetch_mode()
+        return
+
+    # 自动判断模式
+    if args.mode == "auto":
+        mode = should_run_today()
+        print(f"🔍 自动判断: 今日模式 = {mode}")
+        if mode == "skip":
+            print("⏭️  今日无需执行复盘（周六或节假日中），退出")
+            write_log("自动判断跳过执行", "INFO")
+            return
+        args.mode = mode
+
+    try:
+        if args.mode == "daily":
+            run_daily_mode(dry_run=args.dry_run, force_refresh=args.force_refresh)
+        elif args.mode == "weekly":
+            run_weekly_mode(dry_run=args.dry_run)
+        elif args.mode == "holiday":
+            run_holiday_mode(dry_run=args.dry_run)
+    except Exception as e:
+        error_msg = f"执行失败: {e}\n{traceback.format_exc()}"
+        print(f"❌ {error_msg}")
+        write_log(error_msg, "ERROR")
+
+
+if __name__ == "__main__":
+    main()
