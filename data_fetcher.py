@@ -49,6 +49,9 @@ except ImportError:
     print("❌ 请先安装 pandas: pip3 install pandas")
     sys.exit(1)
 
+# 缓存目录
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
+
 
 def _safe_float(val) -> float:
     """安全转换为 float，处理 '-' 等特殊值"""
@@ -612,86 +615,130 @@ def _get_board_type(code: str) -> str:
         return "主板(10cm)"
 
 
+# 溢价基因磁盘缓存路径
+GENE_CACHE_FILE = os.path.join(CACHE_DIR, "premium_gene_cache.json")
+
+
+def _load_gene_cache() -> dict:
+    """加载溢价基因磁盘缓存"""
+    if os.path.exists(GENE_CACHE_FILE):
+        try:
+            with open(GENE_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_gene_cache(cache: dict):
+    """保存溢价基因磁盘缓存"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(GENE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def _compute_premium_gene_for_stock(code: str, name: str):
+    """为单只股票计算溢价基因，失败返回 None"""
+    try:
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=300)).strftime("%Y%m%d")
+
+        board_type = _get_board_type(code)
+        if "30cm" in board_type:
+            limit_pct = 29.5
+        elif "20cm" in board_type:
+            limit_pct = 19.5
+        else:
+            limit_pct = 9.5
+
+        hist = safe_call(ak.stock_zh_a_hist, symbol=code, period="daily",
+                         start_date=start_date, end_date=end_date, adjust="qfq")
+        if hist is None or hist.empty:
+            return None
+
+        hist = hist.sort_values("日期").reset_index(drop=True)
+        is_limit = hist["涨跌幅"] >= limit_pct
+        limit_count = int(is_limit.sum())
+
+        if limit_count == 0:
+            return {
+                "名称": name,
+                "近200日涨停次数": 0, "溢价5%次数": 0,
+                "次日红盘率": 0, "连板率": 0,
+            }
+
+        premium_5 = 0
+        red_next = 0
+        consecutive = 0
+        limit_indices = hist.index[is_limit].tolist()
+
+        for idx in limit_indices:
+            if idx + 1 < len(hist):
+                next_row = hist.iloc[idx + 1]
+                if next_row["涨跌幅"] > 0:
+                    red_next += 1
+                open_chg = (next_row["开盘"] - next_row["昨收"]) / next_row["昨收"] * 100
+                if open_chg >= 5:
+                    premium_5 += 1
+            if idx > 0 and is_limit.iloc[idx - 1]:
+                consecutive += 1
+
+        return {
+            "名称": name,
+            "近200日涨停次数": limit_count,
+            "溢价5%次数": premium_5,
+            "次日红盘率": round(red_next / limit_count * 100, 1),
+            "连板率": round(consecutive / limit_count * 100, 1),
+        }
+    except Exception:
+        return None
+
+
 def fetch_premium_gene(symbols: list) -> dict:
-    """为指定股票列表采集溢价基因数据（近200个交易日）
+    """为指定股票列表采集溢价基因数据（近200个交易日），带磁盘缓存
 
-    对每只股票获取历史日线，计算：
-    - 近200日涨停次数
-    - 涨停次日溢价≥5%次数
-    - 涨停次日红盘率
-    - 连板率
-
-    Returns: {代码: {溢价基因字典}}
+    优先读缓存，仅对缓存中没有的股票重新计算。
+    如果 API 不可用（非交易时段），直接用缓存数据兜底。
     """
+    cache = _load_gene_cache()
     result = {}
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=300)).strftime("%Y%m%d")
+    need_fetch = []
 
     for stock in symbols:
         code = str(stock.get("代码", ""))
         name = str(stock.get("名称", ""))
         if not code:
             continue
-        try:
-            # 判断涨停阈值
-            board_type = _get_board_type(code)
-            if "30cm" in board_type:
-                limit_pct = 29.5
-            elif "20cm" in board_type:
-                limit_pct = 19.5
+        if code in cache and cache[code].get("名称") == name:
+            result[code] = cache[code]
+        else:
+            need_fetch.append((code, name))
+
+    if need_fetch:
+        print(f"   🔄 溢价基因: {len(result)} 只命中缓存, {len(need_fetch)} 只需新算")
+        new_count = 0
+        for code, name in need_fetch:
+            gene = _compute_premium_gene_for_stock(code, name)
+            if gene is not None:
+                cache[code] = gene
+                result[code] = gene
+                new_count += 1
+                time.sleep(0.3)
             else:
-                limit_pct = 9.5
+                # API 不可用，检查是否有旧缓存
+                if code in cache:
+                    result[code] = cache[code]
+                    print(f"   ⚠️  {name}({code}) API不可用，使用旧缓存")
+                else:
+                    print(f"   ⚠️  {name}({code}) API不可用且无缓存，跳过")
 
-            hist = safe_call(ak.stock_zh_a_hist, symbol=code, period="daily",
-                             start_date=start_date, end_date=end_date, adjust="qfq")
-            if hist is None or hist.empty:
-                continue
+        # 始终写缓存（即使全失败也写空文件，标记已尝试过）
+        _save_gene_cache(cache)
+        if new_count > 0:
+            print(f"   ✅ 溢价基因: {len(result)} 只 (新增 {new_count} 只)")
+        else:
+            print(f"   ⚠️  溢价基因: API不可用且无缓存，{len(need_fetch)} 只暂缺 (下次交易时段自动补)")
 
-            hist = hist.sort_values("日期").reset_index(drop=True)
-            # 标记涨停日（涨跌幅 >= 涨停阈值）
-            is_limit = hist["涨跌幅"] >= limit_pct
-            limit_count = int(is_limit.sum())
-
-            if limit_count == 0:
-                result[code] = {
-                    "名称": name,
-                    "近200日涨停次数": 0, "溢价5%次数": 0,
-                    "次日红盘率": 0, "连板率": 0,
-                }
-                continue
-
-            # 涨停次日溢价统计
-            premium_5 = 0   # 次日开盘溢价≥5%
-            red_next = 0    # 次日收红
-            consecutive = 0  # 连续涨停（连板）
-            limit_indices = hist.index[is_limit].tolist()
-
-            for idx in limit_indices:
-                if idx + 1 < len(hist):
-                    next_row = hist.iloc[idx + 1]
-                    if next_row["涨跌幅"] > 0:
-                        red_next += 1
-                    open_chg = (next_row["开盘"] - next_row["昨收"]) / next_row["昨收"] * 100
-                    if open_chg >= 5:
-                        premium_5 += 1
-                # 连板判定：前一天也是涨停
-                if idx > 0 and is_limit.iloc[idx - 1]:
-                    consecutive += 1
-
-            result[code] = {
-                "名称": name,
-                "近200日涨停次数": limit_count,
-                "溢价5%次数": premium_5,
-                "次日红盘率": round(red_next / limit_count * 100, 1),
-                "连板率": round(consecutive / limit_count * 100, 1),
-            }
-            time.sleep(0.3)  # 避免请求过快触发限流
-        except Exception as e:
-            print(f"   ⚠️  溢价基因采集失败 {name}({code}): {e}")
-            continue
-
-    if result:
-        print(f"   ✅ 溢价基因: {len(result)} 只")
     return result
 
 
@@ -721,6 +768,243 @@ def fetch_reduction_risk() -> list:
     except Exception as e:
         print(f"   ⚠️  减持信息采集失败: {e}")
     return reductions
+
+
+# ---- 个股基本信息缓存（主营/地域/行业，静态数据永久缓存）----
+STOCK_PROFILE_CACHE_FILE = os.path.join(CACHE_DIR, "stock_profile_cache.json")
+
+
+def _load_profile_cache() -> dict:
+    """加载个股基本信息缓存"""
+    if os.path.exists(STOCK_PROFILE_CACHE_FILE):
+        try:
+            with open(STOCK_PROFILE_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_profile_cache(cache: dict):
+    """保存个股基本信息缓存"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(STOCK_PROFILE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def fetch_stock_profiles(codes: list) -> dict:
+    """获取个股基本信息（主营/地域/行业），带永久磁盘缓存
+
+    使用 stock_profile_cninfo（巨潮资讯），24/7 可用。
+    返回: {代码: {公司名称, 地域, 主营, 行业, 上市日期}}
+    """
+    cache = _load_profile_cache()
+    result = {}
+    need_fetch = []
+
+    for code in codes:
+        code = str(code)
+        if code in cache:
+            result[code] = cache[code]
+        else:
+            need_fetch.append(code)
+
+    if need_fetch:
+        print(f"   🔄 个股基本信息: {len(result)} 只命中缓存, {len(need_fetch)} 只需新查")
+        for code in need_fetch:
+            try:
+                df = safe_call(ak.stock_profile_cninfo, symbol=code)
+                if df is not None and not df.empty:
+                    row = df.iloc[0]
+                    # 从注册地址提取省份/城市
+                    addr = str(row.get("注册地址", "") or row.get("办公地址", ""))
+                    # 从地址提取省份/直辖市（省/市两级）
+                    if "省" in addr:
+                        region = addr.split("省")[0]
+                    else:
+                        # 直辖市：北京市/天津市/上海市/重庆市
+                        for city in ["北京", "天津", "上海", "重庆"]:
+                            if addr.startswith(city):
+                                region = city
+                                break
+                        else:
+                            region = addr[:4]
+                    profile = {
+                        "公司名称": str(row.get("公司名称", "")),
+                        "地域": region,
+                        "主营": str(row.get("主营业务", "")),
+                        "行业": str(row.get("所属行业", "")),
+                        "上市日期": str(row.get("上市日期", "")),
+                    }
+                    cache[code] = profile
+                    result[code] = profile
+                else:
+                    print(f"   ⚠️  个股信息查不到 {code}")
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"   ⚠️  个股信息查询失败 {code}: {e}")
+
+        # 有新查询结果时才写缓存
+        original_len = len(cache)
+        if len(result) > original_len:
+            _save_profile_cache(cache)
+            print(f"   ✅ 个股基本信息: {len(result)} 只 (新增 {len(result) - original_len} 只)")
+    else:
+        print(f"   ✅ 个股基本信息: {len(result)} 只 (全部命中缓存)")
+
+    return result
+
+
+# ---- 龙虎榜席位级明细 ----
+def fetch_dragon_tiger_seat_detail(date_str: str = None) -> dict:
+    """获取龙虎榜个股的席位级买卖明细
+
+    对每只龙虎榜个股，分别获取买入席位和卖出席位前五详情。
+    Returns: {代码: {买入前五: [...], 卖出前五: [...]}}
+    """
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y%m%d")
+
+    result = {}
+    try:
+        # 获取当日龙虎榜个股列表
+        df_list = safe_call(ak.stock_lhb_detail_em, start_date=date_str, end_date=date_str)
+        if df_list is None or df_list.empty:
+            print(f"   ⚠️  龙虎榜席位明细: 当日无龙虎榜数据")
+            return result
+
+        codes = df_list["代码"].unique().tolist()
+        print(f"   🔄 龙虎榜席位明细: {len(codes)} 只个股")
+
+        for code in codes:
+            try:
+                detail = {"代码": str(code), "买入前五": [], "卖出前五": []}
+                # 买入席位
+                buy_df = safe_call(ak.stock_lhb_stock_detail_em,
+                                   symbol=code, date=date_str, flag="买入")
+                if buy_df is not None and not buy_df.empty:
+                    for _, row in buy_df.head(5).iterrows():
+                        detail["买入前五"].append({
+                            "营业部": str(row.get("交易营业部名称", "")),
+                            "买入金额": round(float(row.get("买入金额", 0)) / 1e4, 2),
+                            "占总成交比": row.get("买入金额-占总成交比例", 0),
+                        })
+                # 卖出席位
+                sell_df = safe_call(ak.stock_lhb_stock_detail_em,
+                                    symbol=code, date=date_str, flag="卖出")
+                if sell_df is not None and not sell_df.empty:
+                    for _, row in sell_df.head(5).iterrows():
+                        detail["卖出前五"].append({
+                            "营业部": str(row.get("交易营业部名称", "")),
+                            "卖出金额": round(float(row.get("卖出金额", 0)) / 1e4, 2),
+                            "占总成交比": row.get("卖出金额-占总成交比例", 0),
+                        })
+                result[code] = detail
+                time.sleep(0.2)
+            except Exception:
+                continue
+
+        if result:
+            print(f"   ✅ 龙虎榜席位明细: {len(result)} 只")
+    except Exception as e:
+        print(f"   ⚠️  龙虎榜席位明细采集失败: {e}")
+
+    return result
+
+
+# ---- 当日市场要闻 ----
+def fetch_market_news() -> list:
+    """采集当日市场要闻（替代 DeepSeek API 无法联网的限制）
+
+    优先使用 stock_info_global_em（全球财经，实时更新），
+    备用 stock_news_em（个股新闻）。限前 15 条。
+    """
+    news_list = []
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        # 首选：全球财经新闻（24/7可用，实时更新）
+        df = safe_call(ak.stock_info_global_em)
+        if df is not None and not df.empty and "发布时间" in df.columns:
+            today_news = df[df["发布时间"].str.startswith(today, na=False)]
+            for _, row in today_news.head(15).iterrows():
+                news_list.append({
+                    "标题": str(row.get("标题", "")),
+                    "内容": str(row.get("摘要", ""))[:300],
+                    "时间": str(row.get("发布时间", "")),
+                    "来源": "东方财富",
+                })
+    except Exception:
+        pass
+
+    # 备用：个股相关新闻
+    if not news_list:
+        try:
+            df = safe_call(ak.stock_news_em)
+            if df is not None and not df.empty and "发布时间" in df.columns:
+                today_news = df[df["发布时间"].str.startswith(today, na=False)]
+                if today_news.empty:
+                    # 取最近几天的
+                    today_news = df.head(15)
+                for _, row in today_news.head(15).iterrows():
+                    news_list.append({
+                        "标题": str(row.get("新闻标题", "")),
+                        "内容": str(row.get("新闻内容", ""))[:300],
+                        "时间": str(row.get("发布时间", "")),
+                        "来源": str(row.get("文章来源", "")),
+                    })
+        except Exception:
+            pass
+
+    if news_list:
+        print(f"   ✅ 市场要闻: {len(news_list)} 条")
+    else:
+        print(f"   ⚠️  市场要闻: 0 条")
+
+    return news_list
+
+
+# ---- 雪球热度榜（交易热度+关注热度综合排名）----
+def fetch_xueqiu_hot_rank(top_n: int = 20) -> list:
+    """采集雪球当日热度榜（综合交易热度 + 关注热度 + 讨论热度）
+
+    使用 stock_hot_deal_xq / stock_hot_follow_xq（24/7 可用）。
+    返回 TOP N 热度标的列表。
+    """
+    hot_stocks = []
+    try:
+        # 交易热度（已按热度排序）
+        deal_df = safe_call(ak.stock_hot_deal_xq)
+        if deal_df is not None and not deal_df.empty:
+            for _, row in deal_df.head(top_n * 2).iterrows():
+                hot_stocks.append({
+                    "代码": str(row.get("股票代码", "")).replace("SH", "").replace("SZ", ""),
+                    "名称": str(row.get("股票简称", "")),
+                    "热度来源": "交易热度",
+                })
+        # 关注热度
+        follow_df = safe_call(ak.stock_hot_follow_xq)
+        if follow_df is not None and not follow_df.empty:
+            for _, row in follow_df.head(top_n).iterrows():
+                hot_stocks.append({
+                    "代码": str(row.get("股票代码", "")).replace("SH", "").replace("SZ", ""),
+                    "名称": str(row.get("股票简称", "")),
+                    "热度来源": "关注热度",
+                })
+        if hot_stocks:
+            # 去重 + 截断
+            seen = set()
+            unique = []
+            for s in hot_stocks:
+                if s["代码"] not in seen:
+                    seen.add(s["代码"])
+                    unique.append(s)
+            hot_stocks = unique[:top_n]
+            print(f"   ✅ 雪球热度榜: {len(hot_stocks)} 只")
+    except Exception as e:
+        print(f"   ⚠️  雪球热度榜采集失败: {e}")
+
+    return hot_stocks
 
 
 def _enrich_consecutive_board(stocks: list, stock_map: dict, reduction_codes: set) -> list:
@@ -943,16 +1227,152 @@ def collect_all() -> dict:
     reduction_codes = {r["代码"] for r in reduction_list}
     data["减持风险"] = reduction_list
 
-    # ---- 连板股增强：补充市值/PE/板块类型/减持标记 ----
+    # ---- 个股基本信息（主营/地域，仅连板股+涨停股，静态数据永久缓存）----
     cb_stocks = data.get("连板股", [])
+    profile_codes = set()
+    for s in cb_stocks:
+        profile_codes.add(s.get("代码", ""))
+    # 涨停股也采集基本信息（用于放量筛选 + 逆势筛选）
+    for s in data.get("涨跌停", {}).get("涨停股列表", [])[:30]:
+        profile_codes.add(s.get("代码", ""))
+    profile_codes.discard("")
+    if profile_codes:
+        data["个股信息"] = fetch_stock_profiles(list(profile_codes))
+    else:
+        data["个股信息"] = {}
+
+    # ---- 连板股增强：补充市值/PE/板块类型/减持标记 + 地域/主营 ----
     if cb_stocks:
         data["连板股"] = _enrich_consecutive_board(cb_stocks, stock_map, reduction_codes)
-        print(f"   ✅ 连板股增强: {len(data['连板股'])} 只（已补充市值/PE/板块类型）")
+        # 注入个股基本信息（地域/主营）
+        for stock in data["连板股"]:
+            code = stock.get("代码", "")
+            if code in data["个股信息"]:
+                info = data["个股信息"][code]
+                if not stock.get("地域"):
+                    stock["地域"] = info.get("地域", "")
+                if not stock.get("主营"):
+                    stock["主营"] = info.get("主营", "")
+                if not stock.get("行业"):
+                    stock["行业"] = info.get("行业", "")
+        print(f"   ✅ 连板股增强: {len(data['连板股'])} 只（市值/PE/板块类型/地域/主营）")
 
-    # ---- 溢价基因：仅对连板股采集（200日历史较重）----
+    # ---- 溢价基因：仅对连板股采集（200日历史较重，带磁盘缓存）----
     if cb_stocks:
         premium_data = fetch_premium_gene(cb_stocks)
         data["溢价基因"] = premium_data
+
+    # ---- 龙虎榜席位级明细 ----
+    data["龙虎榜席位"] = fetch_dragon_tiger_seat_detail()
+
+    # ---- 当日市场要闻（替代API联网搜索）----
+    data["市场要闻"] = fetch_market_news()
+
+    # ---- 雪球热度榜 ----
+    data["雪球热度榜"] = fetch_xueqiu_hot_rank(20)
+
+    # ---- 前5日均量：轻量成交额历史（volume_history.json）----
+    # 结构: {"_date": "2026-07-08", "volumes": {"000001": [12.5, 13.2, ...], ...}}
+    # 每只股票只保留最近5日成交额列表（几十KB），不存完整行情
+    # volumes[code] = [day-1_amt, day-2_amt, ...] 不含当日
+    VOLUME_HISTORY_FILE = os.path.join(CACHE_DIR, "volume_history.json")
+    volume_history = {}
+    if os.path.exists(VOLUME_HISTORY_FILE):
+        try:
+            with open(VOLUME_HISTORY_FILE, "r") as f:
+                volume_history = json.load(f)
+        except Exception:
+            pass
+
+    saved_date = volume_history.get("_date", "")
+    history_volumes = volume_history.get("volumes", {})
+    is_new_day = (saved_date != today_str)
+
+    # 第一步：用旧历史（不含当日）计算前5日均量，注入个股行情
+    for s in data["个股行情"]:
+        code = s.get("代码", "")
+        vlist = history_volumes.get(code, [])
+        s["前5日均量"] = round(sum(vlist) / len(vlist), 2) if vlist else 0
+
+    # 涨停股列表也补充前5日均量（放量筛选需要）
+    for s in data.get("涨跌停", {}).get("涨停股列表", []):
+        code = s.get("代码", "")
+        vlist = history_volumes.get(code, [])
+        s["前5日均量"] = round(sum(vlist) / len(vlist), 2) if vlist else 0
+
+    # 冷启动回补：当日成交额≥20亿但历史不足5日的股票，用 stock_zh_a_hist 拉近5日历史
+    # 仅在 is_new_day 时执行（同日重复 fetch 没必要反复拉）
+    if is_new_day:
+        backfill_candidates = []
+        for s in data["个股行情"]:
+            code = s.get("代码", "")
+            amt = s.get("成交额", 0)
+            if amt >= 20 and len(history_volumes.get(code, [])) < 5:
+                backfill_candidates.append((code, s.get("名称", "")))
+
+        if backfill_candidates:
+            print(f"   🔄 前5日均量冷启动: {len(backfill_candidates)} 只需回补历史")
+            today_ymd = datetime.now().strftime("%Y%m%d")
+            start_ymd = (datetime.now() - timedelta(days=12)).strftime("%Y%m%d")
+            backfilled = 0
+            for code, name in backfill_candidates:
+                try:
+                    hist = safe_call(ak.stock_zh_a_hist, symbol=code, period="daily",
+                                     start_date=start_ymd, end_date=today_ymd, adjust="qfq")
+                    if hist is not None and not hist.empty:
+                        hist = hist.sort_values("日期")
+                        # 排除当日行，取最近5个交易日的成交额
+                        hist = hist[hist["日期"] != today_ymd]
+                        if "成交额" in hist.columns and len(hist) > 0:
+                            amts = hist["成交额"].tail(5).tolist()
+                            amts.reverse()  # 最新在前，与 volume_history 惯例一致: [day-1, day-2, ...]
+                            history_volumes[code] = [round(a / 1e8, 2) for a in amts]
+                            backfilled += 1
+                    time.sleep(0.25)
+                except Exception:
+                    pass
+
+            if backfilled > 0:
+                # 回补后重新计算前5日均量（仅对原来为0的更新，避免覆盖已有数据）
+                stock_map_by_code = {s.get("代码", ""): s for s in data["个股行情"]}
+                for code in {c for c, _ in backfill_candidates}:
+                    vlist = history_volumes.get(code, [])
+                    if vlist and code in stock_map_by_code:
+                        stock_map_by_code[code]["前5日均量"] = round(sum(vlist) / len(vlist), 2)
+                # 涨停股也更新
+                for s in data.get("涨跌停", {}).get("涨停股列表", []):
+                    code = s.get("代码", "")
+                    vlist = history_volumes.get(code, [])
+                    if vlist:
+                        s["前5日均量"] = round(sum(vlist) / len(vlist), 2)
+
+                print(f"   ✅ 前5日均量冷启动: 回补 {backfilled}/{len(backfill_candidates)} 只")
+            else:
+                print(f"   ⚠️  前5日均量冷启动: API不可用, {len(backfill_candidates)} 只暂缺 (下个交易日自动累积)")
+
+    # 第二步：用当日成交额更新历史（新交易日才 push）
+    new_write_count = 0
+    if is_new_day:
+        for s in data["个股行情"]:
+            code = s.get("代码", "")
+            amt = s.get("成交额", 0)
+            if code and amt > 0:
+                if code not in history_volumes:
+                    history_volumes[code] = []
+                # 当日成交额插到最前面，保留最近5日
+                history_volumes[code] = [amt] + history_volumes[code][:4]
+                new_write_count += 1
+        print(f"   ✅ 前5日均量历史: 新增 {new_write_count} 只 (历史覆盖 {len(history_volumes)} 只)")
+    else:
+        print(f"   ✅ 前5日均量: 今日已采集过，跳过写入")
+
+    # 保存轻量历史
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(VOLUME_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"_date": today_str, "volumes": history_volumes}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"   ⚠️  前5日均量保存失败: {e}")
 
     # ---- 板块涨停统计合并到板块排名 ----
     sector_zt = data.get("涨跌停", {}).get("板块涨停统计", {})
