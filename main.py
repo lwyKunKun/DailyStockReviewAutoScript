@@ -4,6 +4,7 @@
 用法:
   python3 main.py                                # 自动判断模式 (读取缓存数据)
   python3 main.py --mode fetch                   # 仅采集数据，保存到缓存
+  python3 main.py --mode dragon                  # 盘后补充龙虎榜数据，合并进缓存
   python3 main.py --mode daily                   # 强制每日复盘 (读缓存)
   python3 main.py --mode daily --force-refresh   # 每日复盘 (强制重新采集)
   python3 main.py --mode weekly                  # 强制周末汇总
@@ -11,7 +12,8 @@
   python3 main.py --mode daily --dry-run         # 干跑（不写文件，打印输出）
 
 定时流程:
-  15:00 → python3 main.py --mode fetch           # 收盘后拉数据，存缓存
+  15:00 → python3 main.py --mode fetch           # 收盘后拉基础数据，存缓存
+  17:30 → python3 main.py --mode dragon          # 补充龙虎榜+涨停+连板数据
   19:00 → python3 main.py --mode auto            # 读缓存，AI分析，写Obsidian
 """
 
@@ -24,7 +26,7 @@ from datetime import datetime
 # 将项目根目录加入 path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from data_fetcher import collect_all
+from data_fetcher import collect_all, fetch_limit_up_data, fetch_dragon_tiger, fetch_consecutive_board_stocks, fetch_fund_flow
 from prompt_builder import build_daily_prompts, build_weekly_prompt, build_holiday_prompt
 from ai_analyzer import analyze_batch, analyze
 from output_writer import write_daily_reviews, write_weekly_summary, write_holiday_summary, write_log
@@ -70,6 +72,61 @@ def load_cached_data() -> dict:
     else:
         print("⚠️  缓存不存在，重新采集数据...")
         return collect_all()
+
+
+def run_dragon_mode():
+    """盘后补充采集龙虎榜+涨停数据，合并进缓存"""
+    print("=" * 60)
+    print(f"🐉 龙虎榜补充采集 - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    write_log("启动龙虎榜补充采集", "INFO")
+
+    # 1. 读取现有缓存
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"📂 读取现有缓存 (采集于 {data.get('采集时间', '未知')})")
+    else:
+        print("⚠️  缓存不存在，无法补充采集（请先执行 --mode fetch）")
+        write_log("龙虎榜补充采集失败：缓存不存在", "ERROR")
+        return
+
+    # 2. 重新采集龙虎榜相关数据（覆盖缓存中的旧值）
+    print("🐉 采集涨停板数据...")
+    data["涨跌停"] = fetch_limit_up_data()
+    print("🐉 采集龙虎榜数据...")
+    data["龙虎榜"] = fetch_dragon_tiger()
+    print("🐉 采集连板股数据...")
+    data["连板股"] = fetch_consecutive_board_stocks()
+
+    # 3. 补充资金流向（15:00 可能也不完整，顺手补一下）
+    try:
+        north_south = data.get("资金流向", {}).get("北向资金净流入", 0)
+        if north_south == 0:
+            print("🐉 补充资金流向数据...")
+            data["资金流向"] = fetch_fund_flow()
+    except Exception:
+        pass
+
+    # 4. 更新采集时间
+    data["采集时间"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 5. 保存回缓存
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+    print(f"📁 缓存已更新: {CACHE_FILE}")
+    print(f"   🐉 涨停: {data['涨跌停']['涨停家数']}家  "
+          f"跌停: {data['涨跌停']['跌停家数']}家  "
+          f"连板: {data['涨跌停']['连板家数']}家  "
+          f"龙虎榜: {len(data['龙虎榜'].get('龙虎榜个股', []))}只")
+    write_log(
+        f"龙虎榜补充采集完成 - 涨停{data['涨跌停']['涨停家数']}家 龙虎榜{len(data['龙虎榜'].get('龙虎榜个股', []))}只",
+        "INFO",
+    )
+    print("✅ 龙虎榜补充采集完成!")
 
 
 def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
@@ -216,9 +273,9 @@ def main():
     parser = argparse.ArgumentParser(description="股票每日复盘自动化系统")
     parser.add_argument(
         "--mode",
-        choices=["daily", "weekly", "holiday", "auto", "fetch"],
+        choices=["daily", "weekly", "holiday", "auto", "fetch", "dragon"],
         default="auto",
-        help="运行模式: fetch=仅采集数据, auto=自动判断, daily/weekly/holiday=指定模式",
+        help="运行模式: fetch=仅采集数据, dragon=补充龙虎榜, auto=自动判断, daily/weekly/holiday=指定模式",
     )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，不写入文件")
     parser.add_argument("--force-refresh", action="store_true", help="强制重新采集数据（不使用缓存）")
@@ -227,6 +284,11 @@ def main():
     # fetch 模式：仅采集数据
     if args.mode == "fetch":
         run_fetch_mode()
+        return
+
+    # dragon 模式：盘后补充龙虎榜
+    if args.mode == "dragon":
+        run_dragon_mode()
         return
 
     # 自动判断模式

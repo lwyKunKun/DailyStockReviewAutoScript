@@ -74,22 +74,28 @@ def safe_call(func, **kwargs) -> Any:
 def _fetch_index_http(target_indices: dict) -> dict:
     """HTTP 备用方案：从东方财富获取指数行情"""
     result = {}
+    # 构建代码→名称的反向映射，用于按实际返回的代码准确匹配
+    code_to_name = {code: name for name, code in target_indices.items()}
     try:
         codes = ",".join([f"1.{code}" for code in target_indices.values()])
         url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
-        params = {"fltt": "2", "invt": "2", "fields": "f2,f3,f4,f5,f6", "secids": codes}
+        params = {"fltt": "2", "invt": "2", "fields": "f2,f3,f4,f5,f6,f12", "secids": codes}
         resp = _get_session().get(url, params=params, timeout=15)
         if resp.status_code == 200:
             items = resp.json().get("data", {}).get("diff", [])
-            for item, (name, code) in zip(items, target_indices.items()):
-                result[name] = {
-                    "代码": code,
-                    "最新价": _safe_float(item.get("f2", 0)),
-                    "涨跌幅": _safe_float(item.get("f3", 0)),
-                    "涨跌额": _safe_float(item.get("f4", 0)),
-                    "成交额": _safe_float(item.get("f6", 0)),
-                }
-            print(f"   ✅ 指数数据(HTTP): {len(result)} 项")
+            for item in items:
+                code = str(item.get("f12", ""))
+                name = code_to_name.get(code)
+                if name:
+                    result[name] = {
+                        "代码": code,
+                        "最新价": _safe_float(item.get("f2", 0)),
+                        "涨跌幅": _safe_float(item.get("f3", 0)),
+                        "涨跌额": _safe_float(item.get("f4", 0)),
+                        "成交额": _safe_float(item.get("f6", 0)),
+                    }
+            if result:
+                print(f"   ✅ 指数数据(HTTP): {len(result)} 项")
     except Exception as e:
         print(f"   ⚠️  HTTP 指数备用方案失败: {e}")
     return result
@@ -145,50 +151,91 @@ def _fetch_index_tencent(target_indices: dict) -> dict:
     return result
 
 
-def fetch_index_data() -> dict:
-    """采集主要指数行情（含备用方案）"""
-    target_indices = {
-        "上证指数": "000001", "深证成指": "399001", "创业板指": "399006",
-        "科创50": "000688", "北证50": "899050", "沪深300": "000300",
-        "上证50": "000016", "中证500": "000905", "中证1000": "000852",
-    }
-
-    # 方案 A：实时行情接口
+def _try_fetch_index_akshare(target_indices: dict, result: dict) -> int:
+    """方案 A：akshare 实时行情接口，返回获取到的数量"""
     df = safe_call(ak.stock_zh_index_spot_em)
-    if df is not None and not df.empty:
-        result = {}
-        for name, code in target_indices.items():
-            row = df[df["代码"] == code]
-            if not row.empty:
-                result[name] = _parse_index_row(row)
-        if result:
-            print(f"   ✅ 指数数据: 实时接口 ({len(result)} 项)")
-            return result
-
-    # 方案 B：HTTP 直接抓取东方财富
-    print("   ⚠️  实时接口失败，尝试 HTTP 备用方案...")
-    result = _fetch_index_http(target_indices)
-    if result:
-        return result
-
-    # 方案 C：腾讯行情 API（24小时可用，不依赖东方财富）
-    print("   ⚠️  HTTP 备用方案失败，尝试腾讯行情 API...")
-    result = _fetch_index_tencent(target_indices)
-    if result:
-        return result
-
-    # 方案 D：日线历史（最后手段）
+    if df is None or df.empty:
+        return 0
+    added = 0
     for name, code in target_indices.items():
+        if name in result:
+            continue
+        row = df[df["代码"] == code]
+        if not row.empty:
+            result[name] = _parse_index_row(row)
+            added += 1
+    return added
+
+
+def _try_fetch_index_history(target_indices: dict, result: dict) -> int:
+    """方案 D：日线历史（逐个指数抓取），返回获取到的数量"""
+    added = 0
+    for name, code in target_indices.items():
+        if name in result:
+            continue
         prefix = "sh" if code.startswith("6") or code.startswith("0") else "sz"
         try:
             hist = safe_call(ak.stock_zh_index_daily_em, symbol=f"{prefix}{code}")
             if hist is not None and not hist.empty:
                 row = hist.iloc[-1]
-                result[name] = {"代码": code, "最新价": float(row["close"]), "涨跌幅": float(row.get("pct_chg", 0)), "涨跌额": float(row.get("change", 0)), "成交额": float(row.get("amount", 0))}
+                result[name] = {
+                    "代码": code,
+                    "最新价": float(row["close"]),
+                    "涨跌幅": float(row.get("pct_chg", 0)),
+                    "涨跌额": float(row.get("change", 0)),
+                    "成交额": float(row.get("amount", 0)),
+                }
+                added += 1
         except Exception:
             pass
-    if result:
-        print(f"   ✅ 指数数据: 历史接口 ({len(result)} 项)")
+    return added
+
+
+def fetch_index_data() -> dict:
+    """采集主要指数行情 — 多源互补，确保 9 项指数全部覆盖"""
+    target_indices = {
+        "上证指数": "000001", "深证成指": "399001", "创业板指": "399006",
+        "科创50": "000688", "北证50": "899050", "沪深300": "000300",
+        "上证50": "000016", "中证500": "000905", "中证1000": "000852",
+    }
+    total = len(target_indices)
+    result = {}
+
+    # 方案 A：akshare 实时行情接口
+    added = _try_fetch_index_akshare(target_indices, result)
+    if added:
+        print(f"   ✅ 指数(akshare): +{added}, 已覆盖 {len(result)}/{total}")
+    if len(result) == total:
+        return result
+
+    # 方案 B：HTTP 东方财富 ulist 接口
+    http_result = _fetch_index_http(target_indices)
+    if http_result:
+        for name, data in http_result.items():
+            if name not in result:
+                result[name] = data
+        print(f"   ✅ 指数(HTTP): 已覆盖 {len(result)}/{total}")
+    if len(result) == total:
+        return result
+
+    # 方案 C：腾讯行情 API
+    tencent_result = _fetch_index_tencent(target_indices)
+    if tencent_result:
+        for name, data in tencent_result.items():
+            if name not in result:
+                result[name] = data
+        print(f"   ✅ 指数(腾讯): 已覆盖 {len(result)}/{total}")
+    if len(result) == total:
+        return result
+
+    # 方案 D：日线历史（逐个指数请求，最后手段）
+    added = _try_fetch_index_history(target_indices, result)
+    if added:
+        print(f"   ⚠️  指数(历史): +{added}, 已覆盖 {len(result)}/{total}")
+
+    if len(result) < total:
+        missing = [n for n in target_indices if n not in result]
+        print(f"   ⚠️  指数缺失 {len(missing)} 项: {', '.join(missing)}")
     return result
 
 
