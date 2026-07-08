@@ -26,7 +26,7 @@ from datetime import datetime
 # 将项目根目录加入 path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from data_fetcher import collect_all, fetch_limit_up_data, fetch_dragon_tiger, fetch_consecutive_board_stocks, fetch_fund_flow
+from data_fetcher import collect_all, fetch_limit_up_data, fetch_dragon_tiger, fetch_consecutive_board_stocks, fetch_fund_flow, _enrich_consecutive_board, _get_board_type, fetch_reduction_risk
 from prompt_builder import build_daily_prompts, build_weekly_prompt, build_holiday_prompt
 from ai_analyzer import analyze_batch, analyze
 from output_writer import write_daily_reviews, write_weekly_summary, write_holiday_summary, write_log
@@ -109,7 +109,36 @@ def run_dragon_mode():
     except Exception:
         pass
 
-    # 4. 更新采集时间
+    # 4. 连板股增强（补充市值/PE/板块类型/减持标记）
+    try:
+        stock_list = data.get("个股行情", [])
+        if stock_list:
+            stock_map = {s.get("代码", ""): s for s in stock_list}
+            reduction_list = fetch_reduction_risk()
+            reduction_codes = {r["代码"] for r in reduction_list}
+            data["减持风险"] = reduction_list
+            data["连板股"] = _enrich_consecutive_board(
+                data.get("连板股", []), stock_map, reduction_codes
+            )
+            print(f"🐉 连板股增强: {len(data['连板股'])} 只")
+    except Exception:
+        pass
+
+    # 5. 板块涨停统计合并到板块排名
+    try:
+        sector_zt = data.get("涨跌停", {}).get("板块涨停统计", {})
+        if sector_zt and data.get("板块排名", {}).get("板块列表"):
+            for info in data["板块排名"]["板块列表"]:
+                if info.get("名称", "") in sector_zt:
+                    info["涨停家数"] = sector_zt[info.get("名称", "")]
+            for item in data["板块排名"].get("领涨板块", []):
+                item["涨停家数"] = sector_zt.get(item.get("名称", ""), 0)
+            for item in data["板块排名"].get("领跌板块", []):
+                item["涨停家数"] = sector_zt.get(item.get("名称", ""), 0)
+    except Exception:
+        pass
+
+    # 6. 更新采集时间
     data["采集时间"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # 5. 保存回缓存
