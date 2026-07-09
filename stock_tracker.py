@@ -67,11 +67,20 @@ def extract_stock_codes(texts: list[str]) -> list[dict]:
     """从 AI 生成的文本中提取股票代码和名称"""
     stocks = []
     seen = set()
-    pattern = re.compile(r"([\u4e00-\u9fa5]{2,6})\s*[（(]?\s*(\d{6})\s*[）)]?")
+
+    # 格式1: 名称（代码）或 名称(代码) — 常见于分析文本中
+    pattern_text = re.compile(r"([\u4e00-\u9fa5]{2,6})\s*[（(]?\s*(\d{6})\s*[）)]?")
+    # 格式2: | 000977 | 浪潮信息 | 或 | 1 | 000977 | 浪潮信息 | — 常见于表格行
+    pattern_table = re.compile(r"\|\s*(?:\d+\s*\|)?\s*(\d{6})\s*\|\s*([\u4e00-\u9fa5]{2,6})\s*\|")
 
     for text in texts:
-        matches = pattern.findall(text)
-        for name, code in matches:
+        # 先匹配文本格式
+        for name, code in pattern_text.findall(text):
+            if code not in seen:
+                seen.add(code)
+                stocks.append({"代码": code, "名称": name})
+        # 再匹配表格格式
+        for code, name in pattern_table.findall(text):
             if code not in seen:
                 seen.add(code)
                 stocks.append({"代码": code, "名称": name})
