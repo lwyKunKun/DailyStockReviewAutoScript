@@ -198,8 +198,8 @@ def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
 
     # 5. 更新股票跟踪
     if not dry_run and results:
-        all_texts = [r["content"] for r in results]
-        db = update_tracking(all_texts, source="每日复盘")
+        source_texts = [(r["name"], r["content"]) for r in results]
+        db = update_tracking(source_texts)
         stats = get_tracking_stats()
         write_log(f"股票跟踪更新 - 总计: {stats['总计']} 跟踪中: {stats['跟踪中']} 已退潮: {stats['已退潮']}", "INFO")
         print(f"📈 股票跟踪库: {stats}")
