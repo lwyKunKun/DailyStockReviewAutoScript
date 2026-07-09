@@ -63,8 +63,13 @@ def _save_db(db: dict):
         json.dump(db, f, ensure_ascii=False, indent=2)
 
 
+def _is_blacklisted(name: str) -> bool:
+    """过滤 ST 股、退市股"""
+    return "ST" in name or "退" in name
+
+
 def extract_stock_codes(texts: list[str]) -> list[dict]:
-    """从 AI 生成的文本中提取股票代码和名称"""
+    """从 AI 生成的文本中提取股票代码和名称（自动过滤 ST/退市股）"""
     stocks = []
     seen = set()
 
@@ -76,12 +81,12 @@ def extract_stock_codes(texts: list[str]) -> list[dict]:
     for text in texts:
         # 先匹配文本格式
         for name, code in pattern_text.findall(text):
-            if code not in seen:
+            if code not in seen and not _is_blacklisted(name):
                 seen.add(code)
                 stocks.append({"代码": code, "名称": name})
         # 再匹配表格格式
         for code, name in pattern_table.findall(text):
-            if code not in seen:
+            if code not in seen and not _is_blacklisted(name):
                 seen.add(code)
                 stocks.append({"代码": code, "名称": name})
 
