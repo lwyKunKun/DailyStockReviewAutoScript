@@ -1,0 +1,14 @@
+# 股票每日复盘 · 定时任务（北京时间）
+# 服务器时区需设置为 Asia/Shanghai
+
+# 15:00 数据采集（全量拉取+存缓存）
+0 15 * * 1-5 cd /home/ubuntu/stock-review && python3 main.py --mode fetch >> logs/cron-fetch.log 2>&1
+
+# 17:30 龙虎榜补充采集
+30 17 * * 1-5 cd /home/ubuntu/stock-review && python3 main.py --mode dragon >> logs/cron-dragon.log 2>&1
+
+# 19:00 AI 分析 + 写入文件
+0 19 * * 1-5 cd /home/ubuntu/stock-review && python3 main.py --mode auto >> logs/cron-daily.log 2>&1
+
+# 19:05 推送产出文件到 GitHub（Mac 端通过 git pull 同步）
+5 19 * * 1-5 cd /home/ubuntu/stock-review && bash server/sync-output.sh >> logs/cron-sync.log 2>&1
