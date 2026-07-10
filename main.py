@@ -68,6 +68,15 @@ def load_cached_data() -> dict:
             data = json.load(f)
         cache_time = data.get("采集时间", "未知")
         print(f"📂 使用缓存数据 (采集于 {cache_time})")
+
+        # 缓存新鲜度检查：采集日期与今天是否一致
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if cache_time.startswith(today_str):
+            pass  # 今日缓存，正常
+        elif cache_time != "未知":
+            print(f"⚠️  警告：缓存数据来自 {cache_time[:10]}，非今日({today_str})数据！")
+            print(f"   15:00 fetch 可能尚未完成，分析结果可能不准确。")
+
         return data
     else:
         print("⚠️  缓存不存在，重新采集数据...")

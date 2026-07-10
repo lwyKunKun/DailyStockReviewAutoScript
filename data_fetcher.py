@@ -6,6 +6,7 @@
 
 import json
 import os
+import socket
 import sys
 import time
 from datetime import datetime, timedelta
@@ -1302,6 +1303,8 @@ def collect_all() -> dict:
 
     # 冷启动回补：当日成交额≥20亿但历史不足5日的股票，用 stock_zh_a_hist 拉近5日历史
     # 仅在 is_new_day 时执行（同日重复 fetch 没必要反复拉）
+    # 策略：socket 超时 8s + 单次尝试不重试 + 总时间预算 3 分钟
+    # stock_zh_a_hist 在 15:00-19:00 挤兑严重，不能让它阻塞整体管线
     if is_new_day:
         backfill_candidates = []
         for s in data["个股行情"]:
@@ -1311,26 +1314,44 @@ def collect_all() -> dict:
                 backfill_candidates.append((code, s.get("名称", "")))
 
         if backfill_candidates:
-            print(f"   🔄 前5日均量冷启动: {len(backfill_candidates)} 只需回补历史")
+            print(f"   🔄 前5日均量冷启动: {len(backfill_candidates)} 只需回补 (时间预算: 3分钟, 超时8s/只)")
             today_ymd = datetime.now().strftime("%Y%m%d")
             start_ymd = (datetime.now() - timedelta(days=12)).strftime("%Y%m%d")
             backfilled = 0
-            for code, name in backfill_candidates:
-                try:
-                    hist = safe_call(ak.stock_zh_a_hist, symbol=code, period="daily",
-                                     start_date=start_ymd, end_date=today_ymd, adjust="qfq")
-                    if hist is not None and not hist.empty:
-                        hist = hist.sort_values("日期")
-                        # 排除当日行，取最近5个交易日的成交额
-                        hist = hist[hist["日期"] != today_ymd]
-                        if "成交额" in hist.columns and len(hist) > 0:
-                            amts = hist["成交额"].tail(5).tolist()
-                            amts.reverse()  # 最新在前，与 volume_history 惯例一致: [day-1, day-2, ...]
-                            history_volumes[code] = [round(a / 1e8, 2) for a in amts]
-                            backfilled += 1
-                    time.sleep(0.25)
-                except Exception:
-                    pass
+            processed = 0
+            budget_start = time.time()
+            BUDGET_SECONDS = 180  # 总时间预算 3 分钟
+            SOCKET_TIMEOUT = 8    # 单次 socket 超时 8 秒
+
+            # 设置全局 socket 超时，让 akshare 内部 requests 调用快速失败
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(SOCKET_TIMEOUT)
+
+            try:
+                for code, name in backfill_candidates:
+                    # 时间预算检查
+                    if time.time() - budget_start > BUDGET_SECONDS:
+                        break
+
+                    try:
+                        # 单次调用，不重试（与 safe_call 不同）
+                        hist = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                                  start_date=start_ymd, end_date=today_ymd, adjust="qfq")
+                        if hist is not None and not hist.empty:
+                            hist = hist.sort_values("日期")
+                            hist = hist[hist["日期"] != today_ymd]
+                            if "成交额" in hist.columns and len(hist) > 0:
+                                amts = hist["成交额"].tail(5).tolist()
+                                amts.reverse()
+                                history_volumes[code] = [round(a / 1e8, 2) for a in amts]
+                                backfilled += 1
+                    except Exception:
+                        pass  # 单次失败直接跳过，不等重试
+                    processed += 1
+
+                    # 无 sleep——socket 超时本身就是天然的限速
+            finally:
+                socket.setdefaulttimeout(old_timeout)
 
             if backfilled > 0:
                 # 回补后重新计算前5日均量（仅对原来为0的更新，避免覆盖已有数据）
@@ -1346,9 +1367,14 @@ def collect_all() -> dict:
                     if vlist:
                         s["前5日均量"] = round(sum(vlist) / len(vlist), 2)
 
-                print(f"   ✅ 前5日均量冷启动: 回补 {backfilled}/{len(backfill_candidates)} 只")
+            total_elapsed = time.time() - budget_start
+            skipped = len(backfill_candidates) - processed
+            if skipped > 0:
+                print(f"   ⏰ 前5日均量冷启动: 回补 {backfilled} 只, 超时间预算跳过 {skipped} 只 (已处理 {processed} 只, 耗时 {total_elapsed:.0f}s)")
+            elif backfilled > 0:
+                print(f"   ✅ 前5日均量冷启动: 回补 {backfilled}/{len(backfill_candidates)} 只 (耗时 {total_elapsed:.0f}s)")
             else:
-                print(f"   ⚠️  前5日均量冷启动: API不可用, {len(backfill_candidates)} 只暂缺 (下个交易日自动累积)")
+                print(f"   ⚠️  前5日均量冷启动: API不可用, {len(backfill_candidates)} 只暂缺 (耗时 {total_elapsed:.0f}s, 下个交易日自动累积)")
 
     # 第二步：用当日成交额更新历史（新交易日才 push）
     new_write_count = 0
