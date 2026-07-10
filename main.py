@@ -61,21 +61,34 @@ def run_fetch_mode():
     return data
 
 
-def load_cached_data() -> dict:
-    """读取缓存数据"""
+def load_cached_data(force_stale: bool = False) -> dict:
+    """读取缓存数据。工作日缓存非今日数据时拒绝运行（除非 force_stale=True）。"""
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         cache_time = data.get("采集时间", "未知")
         print(f"📂 使用缓存数据 (采集于 {cache_time})")
 
-        # 缓存新鲜度检查：采集日期与今天是否一致
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        if cache_time.startswith(today_str):
-            pass  # 今日缓存，正常
-        elif cache_time != "未知":
-            print(f"⚠️  警告：缓存数据来自 {cache_time[:10]}，非今日({today_str})数据！")
-            print(f"   15:00 fetch 可能尚未完成，分析结果可能不准确。")
+        # 缓存新鲜度检查：工作日（周一到周五）必须用今日缓存
+        today = datetime.now()
+        today_str = today.strftime("%Y-%m-%d")
+        weekday = today.weekday()  # 0=周一, 6=周日
+        cache_date = cache_time[:10] if cache_time != "未知" else ""
+
+        if weekday < 5 and cache_date and cache_date != today_str:
+            msg = (f"❌ 致命错误：缓存数据来自 {cache_date}，非今日({today_str})数据！\n"
+                   f"   15:00 fetch 可能尚未完成或已失败。\n"
+                   f"   为确保复盘准确性，已拒绝运行。\n"
+                   f"   若确认要强制使用过期缓存，请加 --force 参数。")
+            print(msg)
+            write_log(f"拒绝运行：缓存过期 (缓存{cache_date} vs 今日{today_str})", "ERROR")
+            if force_stale:
+                print("⚠️  已通过 --force 强制使用过期缓存，数据可能不准确！")
+                write_log("强制使用过期缓存", "WARN")
+            else:
+                sys.exit(1)
+        elif cache_date and cache_date != today_str:
+            print(f"⚠️  警告：缓存数据来自 {cache_date}，非今日({today_str})数据！（周末/节假日容忍）")
 
         return data
     else:
@@ -167,7 +180,7 @@ def run_dragon_mode():
     print("✅ 龙虎榜补充采集完成!")
 
 
-def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
+def run_daily_mode(dry_run: bool = False, force_refresh: bool = False, force_stale: bool = False):
     """执行每日复盘 4合1"""
     print("=" * 60)
     print(f"📊 每日复盘模式 - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -180,7 +193,7 @@ def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
         write_log("强制刷新，重新采集数据", "INFO")
         data = collect_all()
     else:
-        data = load_cached_data()
+        data = load_cached_data(force_stale=force_stale)
 
     write_log(f"数据就绪 - 成交额: {data['市场宽度']['总成交额']}亿", "INFO")
 
@@ -213,7 +226,24 @@ def run_daily_mode(dry_run: bool = False, force_refresh: bool = False):
         write_log(f"股票跟踪更新 - 总计: {stats['总计']} 跟踪中: {stats['跟踪中']} 已退潮: {stats['已退潮']}", "INFO")
         print(f"📈 股票跟踪库: {stats}")
 
-    # 6. 完成
+    # 6. 健康检查：验证输出文件日期
+    if not dry_run and results:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        health_issues = []
+        for r in results:
+            content = r.get("content", "")
+            out_date = r.get("output_suffix", "")
+            # 检查内容中是否出现今日日期
+            if today_str not in content and "2026" in content:
+                health_issues.append(f"{out_date}: 内容中未找到今日日期 {today_str}")
+        if health_issues:
+            for issue in health_issues:
+                print(f"⚠️  健康检查警告: {issue}")
+            write_log(f"健康检查发现问题: {'; '.join(health_issues)}", "WARN")
+        else:
+            write_log(f"健康检查通过: {len(results)} 份报告日期校验一致", "INFO")
+
+    # 7. 完成
     write_log("每日复盘模式执行完毕", "INFO")
     print("\n✅ 每日复盘完成!")
 
@@ -229,7 +259,7 @@ def run_weekly_mode(dry_run: bool = False):
     write_log("启动周末消息汇总模式", "INFO")
 
     # 使用缓存数据（如果有的话，周日的缓存是周五采集的）
-    data = load_cached_data()
+    data = load_cached_data(force_stale=True)
 
     # 构建 prompt
     task = build_weekly_prompt(data)
@@ -317,6 +347,7 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，不写入文件")
     parser.add_argument("--force-refresh", action="store_true", help="强制重新采集数据（不使用缓存）")
+    parser.add_argument("--force", action="store_true", help="强制运行，忽略缓存过期等安全检查")
     args = parser.parse_args()
 
     # fetch 模式：仅采集数据
@@ -341,7 +372,7 @@ def main():
 
     try:
         if args.mode == "daily":
-            run_daily_mode(dry_run=args.dry_run, force_refresh=args.force_refresh)
+            run_daily_mode(dry_run=args.dry_run, force_refresh=args.force_refresh, force_stale=args.force)
         elif args.mode == "weekly":
             run_weekly_mode(dry_run=args.dry_run)
         elif args.mode == "holiday":
