@@ -1,7 +1,7 @@
 #!/bin/bash
 # ================================================
 # 股票复盘 · 云服务器一键部署
-# 适用: Ubuntu 22.04 / 24.04 (阿里云/腾讯云轻量服务器)
+# 适用: Ubuntu 22.04 / 24.04 (腾讯云/阿里云轻量服务器)
 # 用法: 购买服务器并 SSH 登录后，运行:
 #   bash <(curl -s https://raw.githubusercontent.com/lwyKunKun/DailyStockReviewAutoScript/main/server/setup.sh)
 # 或手动:
