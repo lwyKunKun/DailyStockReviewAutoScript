@@ -32,6 +32,7 @@ from ai_analyzer import analyze_batch, analyze
 from output_writer import write_daily_reviews, write_weekly_summary, write_holiday_summary, write_log
 from stock_tracker import update_tracking, get_tracking_stats
 from holiday_checker import should_run_today, get_holiday_info
+from tracking_curator import curate_tracking
 
 # 缓存文件路径
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
@@ -225,6 +226,20 @@ def run_daily_mode(dry_run: bool = False, force_refresh: bool = False, force_sta
         stats = get_tracking_stats()
         write_log(f"股票跟踪更新 - 总计: {stats['总计']} 跟踪中: {stats['跟踪中']} 已退潮: {stats['已退潮']}", "INFO")
         print(f"📈 股票跟踪库: {stats}")
+
+        # 5.5 AI 智能筛选（生成仪表盘+个股文件）
+        try:
+            curated = curate_tracking()
+            if curated:
+                write_log(
+                    f"AI筛选完成 - 核心池: {len(curated.get('core_pool', []))}只 "
+                    f"观察池: {len(curated.get('watch_pool', []))}只",
+                    "INFO",
+                )
+                print(f"🧠 AI 智能筛选: 核心池 {len(curated.get('core_pool', []))}只 | 观察池 {len(curated.get('watch_pool', []))}只")
+        except Exception as e:
+            print(f"⚠️  AI 智能筛选失败（不影响其他流程）: {e}")
+            write_log(f"AI筛选失败: {e}", "WARN")
 
     # 6. 健康检查：验证输出文件日期
     if not dry_run and results:
