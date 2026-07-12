@@ -64,10 +64,10 @@ def write_daily_reviews(results: list[dict], date: datetime = None) -> list[str]
 
 
 def write_weekly_summary(result: dict, date: datetime = None) -> str:
-    """写入周末消息汇总（放在月份目录下）"""
+    """写入周末消息汇总（放入当天日期子文件夹）"""
     if date is None:
         date = datetime.now()
-    output_dir = _get_monthly_dir(date)
+    output_dir = _get_daily_dir(date)
 
     suffix = result["output_suffix"]
     filename = f"{suffix}.md"
@@ -81,10 +81,10 @@ def write_weekly_summary(result: dict, date: datetime = None) -> str:
 
 
 def write_holiday_summary(result: dict, date: datetime = None) -> str:
-    """写入节假日消息汇总（放在月份目录下）"""
+    """写入节假日消息汇总（放入当天日期子文件夹）"""
     if date is None:
         date = datetime.now()
-    output_dir = _get_monthly_dir(date)
+    output_dir = _get_daily_dir(date)
 
     suffix = result["output_suffix"]
     filename = f"{suffix}.md"

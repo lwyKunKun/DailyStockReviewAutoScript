@@ -221,7 +221,7 @@ def build_weekly_prompt(data: dict) -> dict:
 
     return {
         "name": "周末消息汇总",
-        "output_suffix": f"周末消息汇总-{friday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}",
+        "output_suffix": f"{friday.strftime('%Y%m%d')}-{sunday.strftime('%Y%m%d')}-周末消息汇总",
         "prompt": prompt,
     }
 
