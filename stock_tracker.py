@@ -208,9 +208,9 @@ def update_tracking(source_texts: list[tuple[str, str]]):
 
     _save_db(db)
 
-    # 生成分层 Markdown 表 + Canvas 看板
-    _generate_table(db, today)
-    _generate_canvas(db, today)
+    # 旧格式输出（股票跟踪总表.md + 看板）已废弃，由 tracking_curator.py 替代
+    # _generate_table(db, today)
+    # _generate_canvas(db, today)
 
     print(f"   ✅ 新增 {new_count} 只，更新 {updated_count} 只")
     return db
