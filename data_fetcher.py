@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -965,35 +966,120 @@ def fetch_market_news() -> list:
     return news_list
 
 
-# ---- 雪球热度榜（交易热度+关注热度综合排名）----
-def fetch_xueqiu_hot_rank(top_n: int = 20) -> list:
-    """采集雪球当日热度榜（综合交易热度 + 关注热度 + 讨论热度）
+# ---- 雪球热度榜（热搜榜 - 1 小时维度）----
+def fetch_xueqiu_hot_rank(top_n: int = 50) -> list:
+    """采集雪球当日热搜榜（直接抓取 xueqiu.com/hot/stock 页面）
 
-    使用 stock_hot_deal_xq / stock_hot_follow_xq（24/7 可用）。
-    返回 TOP N 热度标的列表。
+    使用 HTTP 请求直接抓取雪球官网热搜榜页面 HTML，正则解析出股票代码和名称。
+    akshare 的 stock_hot_deal_xq / stock_hot_follow_xq 接口返回的数据维度
+    （交易热度/关注热度）与真实热搜排名不一致，不可信。
+
+    返回 TOP N 热度标的列表，含排名信息。
+    """
+    XUEQIU_HOT_URL = "https://xueqiu.com/hot/stock"
+    hot_stocks = []
+
+    try:
+        session = _get_session()
+        # 首次访问雪球需要设置 cookie，先访问首页获取 cookie
+        try:
+            session.get("https://xueqiu.com/", timeout=10)
+        except Exception:
+            pass  # cookie 设置失败不影响后续请求
+
+        resp = session.get(XUEQIU_HOT_URL, timeout=15)
+        if resp.status_code != 200:
+            print(f"   ⚠️  雪球热搜榜 HTTP {resp.status_code}，回退到 akshare 接口")
+            return _fetch_xueqiu_hot_rank_fallback(top_n)
+
+        # 雪球页面 Content-Type 未指定 charset，requests 会错误识别为 ISO-8859-1，
+        # 需要强制设为 UTF-8 才能正确解析中文
+        resp.encoding = 'utf-8'
+        html = resp.text
+
+        # 正则提取：每个热门股条目是一个 <a> 块，内含 <b>名称</b> 和 <span>代码</span>
+        # 格式: <a href="/S/SH600487">...<b>亨通光电</b>...<span>SH600487</span>...</a>
+        pattern = (
+            r'<a\s+href="/S/(SH\d{6}|SZ\d{6}|BJ\d{6})">'
+            r'.*?'
+            r'<b>([^<]+)</b>'
+            r'.*?'
+            r'</a>'
+        )
+        matches = re.findall(pattern, html, re.DOTALL)
+
+        if not matches:
+            # 备用模式：尝试匹配没有链接标签的格式
+            pattern2 = r'(?:SH|SZ|BJ)\d{6}'
+            codes = re.findall(pattern2, html)
+            if codes:
+                print(f"   ⚠️  雪球热搜榜解析格式异常，回退到 akshare 接口")
+                return _fetch_xueqiu_hot_rank_fallback(top_n)
+
+        seen_codes = set()
+        rank = 0
+        for full_code, name in matches:
+            # 提取纯数字代码（去掉 SH/SZ/BJ 前缀）
+            code = re.sub(r'^(SH|SZ|BJ)', '', full_code)
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            rank += 1
+            hot_stocks.append({
+                "代码": code,
+                "名称": name.strip(),
+                "热度来源": "雪球热搜榜",
+                "排名": rank,
+            })
+            if rank >= top_n:
+                break
+
+        if hot_stocks:
+            # 统计 A 股数量（排除港股/美股等非 A 标的）
+            a_share_count = sum(
+                1 for s in hot_stocks
+                if s["代码"].isdigit() and len(s["代码"]) == 6
+            )
+            print(f"   ✅ 雪球热搜榜: {len(hot_stocks)} 只（其中 A 股 {a_share_count} 只，来源: xueqiu.com/hot/stock）")
+        else:
+            print(f"   ⚠️  雪球热搜榜未解析到数据，回退到 akshare 接口")
+            return _fetch_xueqiu_hot_rank_fallback(top_n)
+
+    except requests.RequestException as e:
+        print(f"   ⚠️  雪球热搜榜请求失败: {e}，回退到 akshare 接口")
+        return _fetch_xueqiu_hot_rank_fallback(top_n)
+    except Exception as e:
+        print(f"   ⚠️  雪球热搜榜解析异常: {e}，回退到 akshare 接口")
+        return _fetch_xueqiu_hot_rank_fallback(top_n)
+
+    return hot_stocks
+
+
+def _fetch_xueqiu_hot_rank_fallback(top_n: int = 20) -> list:
+    """备用方案：使用 akshare 接口采集雪球热度数据
+
+    当 xueqiu.com/hot/stock 页面抓取失败时使用。
+    注意：akshare 接口返回的是交易热度/关注热度综合排名，与真实热搜排名可能不一致。
     """
     hot_stocks = []
     try:
-        # 交易热度（已按热度排序）
         deal_df = safe_call(ak.stock_hot_deal_xq)
         if deal_df is not None and not deal_df.empty:
             for _, row in deal_df.head(top_n * 2).iterrows():
                 hot_stocks.append({
                     "代码": str(row.get("股票代码", "")).replace("SH", "").replace("SZ", ""),
                     "名称": str(row.get("股票简称", "")),
-                    "热度来源": "交易热度",
+                    "热度来源": "交易热度(备用)",
                 })
-        # 关注热度
         follow_df = safe_call(ak.stock_hot_follow_xq)
         if follow_df is not None and not follow_df.empty:
             for _, row in follow_df.head(top_n).iterrows():
                 hot_stocks.append({
                     "代码": str(row.get("股票代码", "")).replace("SH", "").replace("SZ", ""),
                     "名称": str(row.get("股票简称", "")),
-                    "热度来源": "关注热度",
+                    "热度来源": "关注热度(备用)",
                 })
         if hot_stocks:
-            # 去重 + 截断
             seen = set()
             unique = []
             for s in hot_stocks:
@@ -1001,9 +1087,9 @@ def fetch_xueqiu_hot_rank(top_n: int = 20) -> list:
                     seen.add(s["代码"])
                     unique.append(s)
             hot_stocks = unique[:top_n]
-            print(f"   ✅ 雪球热度榜: {len(hot_stocks)} 只")
+            print(f"   ✅ 雪球热度榜(备用): {len(hot_stocks)} 只（来源: akshare，非实时热搜）")
     except Exception as e:
-        print(f"   ⚠️  雪球热度榜采集失败: {e}")
+        print(f"   ⚠️  雪球热度榜备用方案也失败: {e}")
 
     return hot_stocks
 
