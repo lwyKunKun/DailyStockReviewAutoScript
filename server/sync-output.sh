@@ -29,7 +29,10 @@ done
 git pull --no-rebase origin main 2>&1 || true
 
 # git add（保留 stderr 以便排查问题）
-git add output/ tracking-db.json 2>&1
+if ! git add output/ 2>&1; then
+    echo "[$TODAY] ❌ git add 失败，中止推送"
+    exit 1
+fi
 
 # 检查是否有变更
 if git diff --cached --quiet; then
@@ -40,7 +43,14 @@ if git diff --cached --quiet; then
     exit 0
 fi
 
-git commit -m "自动推送: ${TODAY} 股票复盘产出" --quiet 2>&1
-git push origin main --quiet 2>&1
+if ! git commit -m "自动推送: ${TODAY} 股票复盘产出" 2>&1; then
+    echo "[$TODAY] ❌ git commit 失败"
+    exit 1
+fi
 
-echo "[$TODAY] 产出文件已推送到 GitHub"
+if ! git push origin main 2>&1; then
+    echo "[$TODAY] ❌ git push 失败"
+    exit 1
+fi
+
+echo "[$TODAY] ✅ 产出文件已推送到 GitHub"
