@@ -188,7 +188,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 6.31,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "688192": [
@@ -196,7 +196,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 67.6,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "603259": [
@@ -204,7 +204,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 131.5,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "600829": [
@@ -212,7 +212,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 9.89,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "300199": [
@@ -220,7 +220,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 25.26,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "603538": [
@@ -228,7 +228,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 39.0,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "605189": [
@@ -236,7 +236,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 15.64,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "603580": [
@@ -244,6 +244,12 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 37.13,
+      "exitDate": "2026-07-16"
+    },
+    {
+      "pool": "核心池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 40.84,
       "exitDate": null
     }
   ],
@@ -252,7 +258,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 49.07,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "600809": [
@@ -260,7 +266,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 118.25,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "605028": [
@@ -268,7 +274,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 24.23,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "603127": [
@@ -276,7 +282,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 50.62,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "605255": [
@@ -284,7 +290,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 87.19,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "002558": [
@@ -292,7 +298,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 29.56,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "300759": [
@@ -300,7 +306,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 40.3,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "002747": [
@@ -308,7 +314,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 40.9,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "600403": [
@@ -316,7 +322,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 5.63,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "002739": [
@@ -340,7 +346,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 33.29,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "600227": [
@@ -348,7 +354,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 2.92,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "601995": [
@@ -356,7 +362,7 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 38.34,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "002821": [
@@ -364,7 +370,7 @@
       "pool": "核心池",
       "entryDate": "2026-07-15",
       "entryPrice": 195.75,
-      "exitDate": null
+      "exitDate": "2026-07-16"
     }
   ],
   "002484": [
@@ -372,6 +378,86 @@
       "pool": "观察池",
       "entryDate": "2026-07-15",
       "entryPrice": 87.86,
+      "exitDate": "2026-07-16"
+    }
+  ],
+  "600162": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 2.78,
+      "exitDate": null
+    }
+  ],
+  "002294": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 41.37,
+      "exitDate": null
+    }
+  ],
+  "000676": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 6.22,
+      "exitDate": null
+    }
+  ],
+  "300251": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 13.57,
+      "exitDate": null
+    }
+  ],
+  "002365": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 13.18,
+      "exitDate": null
+    }
+  ],
+  "600436": [
+    {
+      "pool": "核心池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 141.15,
+      "exitDate": null
+    }
+  ],
+  "000504": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 9.36,
+      "exitDate": null
+    }
+  ],
+  "600785": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 9.32,
+      "exitDate": null
+    }
+  ],
+  "000566": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 5.67,
+      "exitDate": null
+    }
+  ],
+  "300255": [
+    {
+      "pool": "观察池",
+      "entryDate": "2026-07-16",
+      "entryPrice": 31.7,
       "exitDate": null
     }
   ]
