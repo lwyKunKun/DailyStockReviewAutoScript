@@ -11,6 +11,7 @@ import re
 import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from holiday_checker import is_holiday
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -66,6 +67,35 @@ def _save_db(db: dict):
 def _is_blacklisted(name: str) -> bool:
     """过滤 ST 股、退市股"""
     return "ST" in name or "退" in name
+
+
+def _is_trading_day(date_str: str) -> bool:
+    """判断是否是交易日（周一至周五且非法定节假日）"""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return True
+    if dt.weekday() >= 5:
+        return False
+    is_hol, _, _, _ = is_holiday(dt)
+    return not is_hol
+
+
+def _count_trading_days_since(from_date_str: str, to_date: datetime) -> int:
+    """计算从 from_date 到 to_date（含）之间经过了多少个交易日（不包含 from_date 当天）"""
+    try:
+        start = datetime.strptime(from_date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return 0
+    if start >= to_date:
+        return 0
+    count = 0
+    current = start + timedelta(days=1)
+    while current <= to_date:
+        if _is_trading_day(current.strftime("%Y-%m-%d")):
+            count += 1
+        current += timedelta(days=1)
+    return count
 
 
 def extract_stock_codes(texts: list[str]) -> list[dict]:
@@ -137,6 +167,34 @@ def _get_tier(stock: dict, today: datetime) -> str:
     return _classify_stock(stock)
 
 
+def _update_status_lifecycle(db: dict):
+    """遍历 tracking-db，按交易日计算生命周期
+
+    规则：
+    - "跟踪中" + 连续 ≥5 个交易日未出现 → "休眠"
+    - "休眠" 的不做额外处理（在 update_tracking 中当日重新出现时激活）
+    """
+    today = datetime.now()
+    dormant_count = 0
+
+    for code, entry in db["stocks"].items():
+        if entry["status"] != "跟踪中":
+            continue
+
+        trading_days_gap = _count_trading_days_since(entry["lastSeen"], today)
+        if trading_days_gap >= 5:
+            entry["status"] = "休眠"
+            entry["history"].append({
+                "date": today.strftime("%Y-%m-%d"),
+                "event": f"自动休眠（连续{trading_days_gap}个交易日未出现）",
+                "source": "系统",
+            })
+            dormant_count += 1
+
+    if dormant_count:
+        print(f"   💤 {dormant_count} 只标记为休眠（≥5个交易日未出现）")
+
+
 def update_tracking(source_texts: list[tuple[str, str]]):
     """根据 AI 生成的内容更新股票跟踪库
 
@@ -145,7 +203,6 @@ def update_tracking(source_texts: list[tuple[str, str]]):
                       来源名如 '放量筛选' '涨停跌停潮分析' '每日复盘' 等
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    today_dt = datetime.now()
     db = _load_db()
 
     total_found = 0
@@ -164,6 +221,18 @@ def update_tracking(source_texts: list[tuple[str, str]]):
                 entry = db["stocks"][code]
                 entry["name"] = name
                 entry["lastSeen"] = today
+
+                # 休眠重激活：如果之前是休眠状态，当日重新出现则激活
+                if entry["status"] == "休眠":
+                    entry["status"] = "跟踪中"
+                    entry["history"].append({
+                        "date": today,
+                        "event": f"重新激活（休眠后再次出现在{source_name}）",
+                        "source": source_name,
+                    })
+                    updated_count += 1
+                    continue  # 跳过常规的"再次出现"记录，避免重复
+
                 # 检查是否已有此来源的今日记录，避免重复
                 already_today = any(
                     h.get("date") == today and h.get("source") == source_name
@@ -195,16 +264,8 @@ def update_tracking(source_texts: list[tuple[str, str]]):
 
     print(f"🔍 从 {len(source_texts)} 个来源中提取到 {total_found} 只股票（去重后）")
 
-    # 检查退潮条件：连续 5 天未出现
-    five_days_ago = today_dt - timedelta(days=5)
-    for code, entry in db["stocks"].items():
-        if entry["status"] == "跟踪中":
-            last_seen = datetime.strptime(entry["lastSeen"], "%Y-%m-%d")
-            if last_seen < five_days_ago:
-                entry["status"] = "已退潮"
-                entry["history"].append({
-                    "date": today, "event": "自动退潮(5日未出现)", "source": "系统",
-                })
+    # 生命周期管理：跟踪中 → 休眠（≥5个交易日未出现）
+    _update_status_lifecycle(db)
 
     _save_db(db)
 
