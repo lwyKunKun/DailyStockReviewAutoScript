@@ -288,9 +288,9 @@ def run_weekly_mode(dry_run: bool = False):
         "content": result,
     }
 
-    # 写入
+    # 写入（传入周日日期）
     if not dry_run:
-        filepath = write_weekly_summary(result_dict)
+        filepath = write_weekly_summary(result_dict, date=task["date"])
         write_log(f"写入: {filepath}", "INFO")
     else:
         print("\n--- 🧪 干跑模式 ---")
@@ -336,9 +336,10 @@ def run_holiday_mode(dry_run: bool = False):
         "content": result,
     }
 
-    # 写入
+    # 写入（传入节假日最后一天日期）
     if not dry_run:
-        filepath = write_holiday_summary(result_dict)
+        end_date = datetime.strptime(info["end_date"], "%Y-%m-%d")
+        filepath = write_holiday_summary(result_dict, date=end_date)
         write_log(f"写入: {filepath}", "INFO")
     else:
         print("\n--- 🧪 干跑模式 ---")

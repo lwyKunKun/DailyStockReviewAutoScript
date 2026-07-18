@@ -64,7 +64,7 @@ def write_daily_reviews(results: list[dict], date: datetime = None) -> list[str]
 
 
 def write_weekly_summary(result: dict, date: datetime = None) -> str:
-    """写入周末消息汇总（放入当天日期子文件夹）"""
+    """写入周末消息汇总（放入周日日期子目录）"""
     if date is None:
         date = datetime.now()
     output_dir = _get_daily_dir(date)
@@ -72,6 +72,10 @@ def write_weekly_summary(result: dict, date: datetime = None) -> str:
     suffix = result["output_suffix"]
     filename = f"{suffix}.md"
     filepath = os.path.join(output_dir, filename)
+
+    if os.path.exists(filepath):
+        print(f"⏭️  跳过（已存在）: {filepath}")
+        return filepath
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(result["content"])
@@ -81,7 +85,7 @@ def write_weekly_summary(result: dict, date: datetime = None) -> str:
 
 
 def write_holiday_summary(result: dict, date: datetime = None) -> str:
-    """写入节假日消息汇总（放入当天日期子文件夹）"""
+    """写入节假日消息汇总（放入节假日最后一天日期子目录）"""
     if date is None:
         date = datetime.now()
     output_dir = _get_daily_dir(date)
@@ -89,6 +93,10 @@ def write_holiday_summary(result: dict, date: datetime = None) -> str:
     suffix = result["output_suffix"]
     filename = f"{suffix}.md"
     filepath = os.path.join(output_dir, filename)
+
+    if os.path.exists(filepath):
+        print(f"⏭️  跳过（已存在）: {filepath}")
+        return filepath
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(result["content"])
