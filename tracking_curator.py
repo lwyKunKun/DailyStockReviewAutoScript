@@ -1117,10 +1117,25 @@ def _generate_flow_panel(pool_state: dict, today: str, today_core: set, today_wa
     def _name(code):
         return stocks.get(code, {}).get("name", code)
 
-    # 排序：今日核心池 → 今日观察池，组内按代码排序
-    # 同时过滤：去掉今日在退潮池中的（退潮池不展示在流向面板）
+    # 排序：三层复合排序 —— 池子分组 → 动作信号 → 连续天数 → 代码兜底
+    # 昨日归属（用于判断动作信号）
+    pool_yesterday_map = {}
+    if len(sorted_dates) >= 2:
+        pool_yesterday_map = all_days_data.get(sorted_dates[-2], {})
+
+    def _consecutive_days(code, target_pool):
+        """计算股票在 target_pool 中连续停留的天数（从今天往前数）"""
+        days = 0
+        for d in reversed(sorted_dates):
+            p = all_days_data.get(d, {}).get(code, "")
+            if p == target_pool:
+                days += 1
+            else:
+                break
+        return days
+
     def _sort_key(code):
-        # 今天在哪个池子：核心=0，观察=1，其他（已退出）=2
+        # 第一层：池子分组（核心=0，观察=1，其他=2）
         pool_today = all_days_data.get(today, {}).get(code, "")
         if pool_today == "核心池":
             group = 0
@@ -1128,7 +1143,34 @@ def _generate_flow_panel(pool_state: dict, today: str, today_core: set, today_wa
             group = 1
         else:
             group = 2
-        return (group, code)
+
+        pool_yesterday = pool_yesterday_map.get(code, "")
+
+        # 第二层：动作信号
+        # 0=新进（昨天不在任何池） 1=升级/回流（池子向上） 2=连续稳定 3=降级（池子向下）
+        if not pool_yesterday:
+            action = 0   # 新进
+        elif pool_today == pool_yesterday:
+            action = 2   # 连续稳定
+        elif pool_today == "核心池":
+            action = 1   # 观察/退潮 → 核心，升级/回流
+        elif pool_today == "观察池" and pool_yesterday in ("退潮池",):
+            action = 1   # 退潮 → 观察，回流
+        elif pool_today == "观察池" and pool_yesterday == "核心池":
+            action = 3   # 核心 → 观察，降级
+        else:
+            action = 2
+
+        # 第三层：连续天数
+        # 新进/升级/降级 → 天数少排前面（越新越要看）
+        # 连续稳定 → 天数多排前面（持续性越强越靠前）
+        days = _consecutive_days(code, pool_today)
+        if action == 2:
+            stability = -days    # 负值，天数越多值越小 → 排越前
+        else:
+            stability = days     # 正值，天数越少值越小 → 排越前
+
+        return (group, action, stability, code)
 
     sorted_codes = sorted(all_codes, key=_sort_key)
 
@@ -1236,7 +1278,6 @@ def _generate_dashboard(curated: dict, db: dict, pool_state: dict, prices: dict,
     watch = curated.get("watch_pool", [])[:MAX_WATCH]
 
     tracking_count = sum(1 for s in db.get("stocks", {}).values() if s.get("status") == "跟踪中")
-    ebbed_count = sum(1 for s in db.get("stocks", {}).values() if s.get("status") == "已退潮")
 
     # 退潮池数量（从快照或计算得出）
     yesterday_pools = _get_yesterday_pools(pool_state, today)
@@ -1259,7 +1300,7 @@ def _generate_dashboard(curated: dict, db: dict, pool_state: dict, prices: dict,
         "",
         "# 股票跟踪仪表盘",
         "",
-        f"> 自动更新于 {today} | 跟踪池 {tracking_count} 只 | 核心池 {len(core)} 只 | 观察池 {len(watch)} 只 | 退潮池 ~{fading_count} 只 | 已退潮 {ebbed_count} 只",
+        f"> 自动更新于 {today} | 跟踪池 {tracking_count} 只 | 核心池 {len(core)} 只 | 观察池 {len(watch)} 只 | 退潮池 ~{fading_count} 只",
         f"> 核心池入池以来总收益: {_format_return(total_return)}",
         "",
         "---",
@@ -1364,7 +1405,7 @@ def _generate_dashboard(curated: dict, db: dict, pool_state: dict, prices: dict,
         for s in fading[:15]:  # 只显示前15个
             lines.append(f"| {s['code']} | {s['name']} | {s['lastSeen']} | {s['remaining']}天 |")
         if len(fading) > 15:
-            lines.append(f"| ... | 共{len(fading)}只 | 详见退潮池 | |")
+            lines.append(f"| （已列15只，共{len(fading)}只） | | 详见退潮池 | |")
         lines.append("")
 
     lines.extend([
