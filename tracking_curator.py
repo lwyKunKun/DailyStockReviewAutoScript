@@ -22,6 +22,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from ai_analyzer import analyze
 from holiday_checker import is_holiday
+from stock_tracker import is_likely_sector_name
 
 
 def _is_trading_day(date_str: str) -> bool:
@@ -446,11 +447,15 @@ def _build_price_reference(docs: dict, prices: dict) -> str:
     for name in ["放量筛选", "涨停跌停潮", "复盘"]:
         all_text += docs.get(name, "")
 
-    codes_seen = set()
+    codes_seen = {}  # code -> name（改用 dict，便于用正确名称覆盖板块名）
     for m in re.finditer(r"\|\s*(\d{6})\s*\|\s*([\u4e00-\u9fa5]{2,8})\s*\|", all_text):
-        codes_seen.add((m.group(1), m.group(2)))
+        code, name = m.group(1), m.group(2)
+        if code not in codes_seen or (is_likely_sector_name(codes_seen[code]) and not is_likely_sector_name(name)):
+            codes_seen[code] = name
     for m in re.finditer(r"([\u4e00-\u9fa5]{2,8})\s*[（(]\s*(\d{6})\s*[）)]", all_text):
-        codes_seen.add((m.group(2), m.group(1)))
+        code, name = m.group(2), m.group(1)
+        if code not in codes_seen or (is_likely_sector_name(codes_seen[code]) and not is_likely_sector_name(name)):
+            codes_seen[code] = name
 
     if not codes_seen:
         return ""
@@ -461,7 +466,7 @@ def _build_price_reference(docs: dict, prices: dict) -> str:
         "| 代码 | 名称 | 现价 |",
         "|------|------|------|",
     ]
-    for code, name in sorted(codes_seen):
+    for code, name in sorted(codes_seen.items()):
         price = prices.get(code)
         price_str = str(price) if price else "--"
         lines.append(f"| {code} | {name} | {price_str} |")
@@ -510,9 +515,14 @@ def _build_doc_candidate_table(docs: dict, prices: dict, db: dict,
         all_text += docs.get(name, "")
 
     for m in re.finditer(r"\|\s*(\d{6})\s*\|\s*([\u4e00-\u9fa5]{2,8})\s*\|", all_text):
-        doc_codes[m.group(1)] = m.group(2)
+        code, name = m.group(1), m.group(2)
+        # 如果名称是板块名但不存更好候选，先占位；如果已有板块名则用正确名称覆盖
+        if code not in doc_codes or (is_likely_sector_name(doc_codes[code]) and not is_likely_sector_name(name)):
+            doc_codes[code] = name
     for m in re.finditer(r"([\u4e00-\u9fa5]{2,8})\s*[（(]\s*(\d{6})\s*[）)]", all_text):
-        doc_codes[m.group(2)] = m.group(1)
+        code, name = m.group(2), m.group(1)
+        if code not in doc_codes or (is_likely_sector_name(doc_codes[code]) and not is_likely_sector_name(name)):
+            doc_codes[code] = name
 
     # 2. 昨日池子
     yesterday_core = yesterday_pools.get("core", set())

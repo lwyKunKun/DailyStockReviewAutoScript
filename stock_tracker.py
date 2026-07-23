@@ -42,6 +42,60 @@ SOURCE_TO_CATEGORY = {
     "全球市场消息汇总": "其他关注",
 }
 
+# A股常见的行业/板块名称集合，用于识别被误提取为股票名的板块名
+# 当正则从"板块名（代码）"中提取到这些词时，应识别为板块名而非股票名
+_KNOWN_SECTOR_NAMES = {
+    # 一级行业
+    "电力", "贵金属", "化学原料", "化学制品", "化学纤维", "化学制药",
+    "油服工程", "家居用品", "计算机设备", "计算机应用",
+    "有色金属", "工业金属", "能源金属", "小金属",
+    "煤炭", "煤炭开采", "钢铁", "银行", "保险", "券商", "证券",
+    "房地产", "房地产开发", "房地产服务", "物业管理",
+    "医药", "医药生物", "中药", "医疗器械", "生物制品", "医药商业",
+    "白酒", "食品饮料", "食品加工", "家电", "家纺", "纺织服饰",
+    "新能源", "光伏", "光伏设备", "锂电池", "电池", "储能", "充电桩",
+    "半导体", "芯片", "消费电子", "光学光电子", "电子元件",
+    "军工", "国防军工", "军工电子", "地面兵装", "航海装备",
+    "通信", "通信设备", "通信服务", "软件开发", "IT服务",
+    "传媒", "游戏", "影视", "出版", "广告", "广告营销",
+    "汽车", "汽车整车", "零部件", "汽车服务",
+    "机械设备", "通用设备", "专用设备", "自动化设备", "轨交设备",
+    "建筑材料", "水泥", "玻璃", "装修建材",
+    "农林牧渔", "养殖业", "种植业", "农产品加工", "渔业",
+    "交通运输", "航空机场", "铁路公路", "航运港口", "物流",
+    "公用事业", "环保", "燃气", "水务",
+    "风电", "风电设备", "核电", "氢能源", "天然气", "石油",
+    "特高压", "智能电网", "电网", "电网设备", "电力设备",
+    "工程机械", "工业母机", "机器人",
+    "轻工制造", "商业贸易", "休闲服务",
+    "造纸", "包装印刷", "塑料", "橡胶",
+    "非金属材料", "金属新材料", "稀土", "磁材", "碳纤维",
+    "多元金融", "期货", "信托",
+    "教育", "医疗", "医美", "医疗服务",
+    # 常见被截断的板块名
+    "计算机设",  # "计算机设备"被截断
+    "化学原",    # "化学原料"被截断
+    "家居用",    # "家居用品"被截断
+}
+
+
+def is_likely_sector_name(name: str) -> bool:
+    """判断给定名称是否更可能是板块/行业名而非股票名"""
+    return _is_likely_sector_name(name)
+
+
+def _is_likely_sector_name(name: str) -> bool:
+    """判断给定名称是否更可能是板块/行业名而非股票名"""
+    if name in _KNOWN_SECTOR_NAMES:
+        return True
+    # 后缀匹配：只使用几乎不出现在公司名中的板块专用后缀
+    # 刻意排除 "电子""医药""生物""设备""材料""化工" 等，因为这些常见于公司名
+    _sector_unique_suffixes = ("原料", "开采", "用品", "元件", "制品")
+    for suffix in _sector_unique_suffixes:
+        if name.endswith(suffix) and len(name) >= 4:
+            return True
+    return False
+
 
 def _hash_id(s: str) -> str:
     """生成 16 位 hex Canvas node ID"""
@@ -99,26 +153,45 @@ def _count_trading_days_since(from_date_str: str, to_date: datetime) -> int:
 
 
 def extract_stock_codes(texts: list[str]) -> list[dict]:
-    """从 AI 生成的文本中提取股票代码和名称（自动过滤 ST/退市股）"""
+    """从 AI 生成的文本中提取股票代码和名称（自动过滤 ST/退市股和板块名）"""
     stocks = []
-    seen = set()
+    seen = {}  # code -> index in stocks (改为 dict，便于后续覆盖)
 
     # 格式1: 名称（代码）或 名称(代码) — 常见于分析文本中
     pattern_text = re.compile(r"([\u4e00-\u9fa5]{2,6})\s*[（(]?\s*(\d{6})\s*[）)]?")
     # 格式2: | 000977 | 浪潮信息 | 或 | 1 | 000977 | 浪潮信息 | — 常见于表格行
     pattern_table = re.compile(r"\|\s*(?:\d+\s*\|)?\s*(\d{6})\s*\|\s*([\u4e00-\u9fa5]{2,6})\s*\|")
 
+    def _accept(code, name):
+        """尝试接受一个(代码,名称)对，如果代码已存在但之前是板块名，则用新名称覆盖"""
+        if _is_blacklisted(name):
+            return
+        if _is_likely_sector_name(name):
+            # 板块名不视为有效股票名，但如果该代码之前没被记录过则先占位
+            if code not in seen:
+                seen[code] = len(stocks)
+                stocks.append({"代码": code, "名称": name})
+            # 如果已存在，不覆盖（保留旧名称，无论旧名称是什么）
+            return
+
+        # 非板块名（正常的股票名）
+        if code in seen:
+            idx = seen[code]
+            old_name = stocks[idx]["名称"]
+            if _is_likely_sector_name(old_name):
+                # 旧名称是板块名，用新名称覆盖
+                stocks[idx]["名称"] = name
+        else:
+            seen[code] = len(stocks)
+            stocks.append({"代码": code, "名称": name})
+
     for text in texts:
         # 先匹配文本格式
         for name, code in pattern_text.findall(text):
-            if code not in seen and not _is_blacklisted(name):
-                seen.add(code)
-                stocks.append({"代码": code, "名称": name})
+            _accept(code, name)
         # 再匹配表格格式
         for code, name in pattern_table.findall(text):
-            if code not in seen and not _is_blacklisted(name):
-                seen.add(code)
-                stocks.append({"代码": code, "名称": name})
+            _accept(code, name)
 
     return stocks
 
@@ -219,7 +292,9 @@ def update_tracking(source_texts: list[tuple[str, str]]):
 
             if code in db["stocks"]:
                 entry = db["stocks"][code]
-                entry["name"] = name
+                # 防止板块名覆盖正确的股票名：如果新名称像板块名而旧名称不像，保留旧名称
+                if not _is_likely_sector_name(name) or _is_likely_sector_name(entry.get("name", "")):
+                    entry["name"] = name
                 entry["lastSeen"] = today
 
                 # 休眠重激活：如果之前是休眠状态，当日重新出现则激活
@@ -246,6 +321,9 @@ def update_tracking(source_texts: list[tuple[str, str]]):
                     })
                     updated_count += 1
             else:
+                # 首次入库时如果名称像板块名，记录警告但仍入库（后续正确名称出现时会覆盖）
+                if _is_likely_sector_name(name):
+                    print(f"   ⚠️ 警告: {code} 首次入库但名称为疑似板块名 '{name}'，待后续修正")
                 db["stocks"][code] = {
                     "name": name,
                     "code": code,
